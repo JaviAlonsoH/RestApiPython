@@ -1,4 +1,5 @@
 from email import header
+import json
 import bson
 from bson import ObjectId, json_util
 from validator import validate
@@ -7,7 +8,6 @@ from flask import Response, jsonify, redirect, request, session
 from app import app
 from models.models import User
 from flask_pymongo import PyMongo 
-from auth import jwt
 
 mongo_client = PyMongo(app)
 jwt = JWTManager(app)
@@ -31,14 +31,16 @@ def login():
         validated = validate(data, rules)
         if validated is not True:
             return dict(message='Invalid request', data=None, error=validated), 400
+        user_for_id = mongo_client.db.users.find_one({ "email": data['email'] })
         user = User().login(
             data['email'],
             data['password']
         )
+        print('hola')
         if user:
             print('User exists')
             try:
-                token = create_access_token(identity={ "email": user['email'] })
+                token = create_access_token(identity={ "email": user['email'], "user_id": json.loads(json_util.dumps(user_for_id['_id'])) })
                 print('Token created, going straight to the authorization! ' + token)
                 return {
                     "auth_token": token
@@ -120,6 +122,7 @@ def disable_account(self, id):
     user = self.get_by_id(id)
     return user
 
+@app.route('/createhouse', methods=['POST'])
 
 @app.errorhandler(404)
 def not_found(error=None):
