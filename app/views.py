@@ -1,16 +1,46 @@
 from email import header
+from functools import wraps
 import json
 import bson
 from bson import ObjectId, json_util
+from jwt import DecodeError, decode
+import jwt
 from validator import validate
-from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
-from flask import Response, jsonify, redirect, request, session
+from flask import request
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt, verify_jwt_in_request, get_jwt_identity, set_access_cookies
+from flask_jwt_extended.exceptions import WrongTokenError
+from flask import Response, current_app, jsonify, redirect, request, session
+from validator_collection import datetime
 from app import app
-from models.models import User
+from models.models import Bills, Shoplist, Tasklist, User, Houses
 from flask_pymongo import PyMongo 
+from datetime import datetime, timedelta, timezone
+import re
 
 mongo_client = PyMongo(app)
-jwt = JWTManager(app)
+jwt_manager = JWTManager(app)
+
+def jwt_required_custom(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        token = request.headers['Authorization'].split(' ').pop()
+        if not token:
+            return 'Unauthorized', 401
+        return fn(*args, **kwargs)
+    return wrapper
+
+@app.after_request
+def refresh_expiring_jwts(response):
+    try:
+        exp_timestamp = get_jwt()["exp"]
+        now = datetime.now(timezone.utc)
+        target_timestamp = datetime.timestamp(now + timedelta(minutes=30))
+        if target_timestamp > exp_timestamp:
+            access_token = create_access_token(identity=get_jwt_identity())
+            set_access_cookies(response, access_token)
+        return response
+    except (RuntimeError, KeyError):
+        return response
 
 ### LOGIN ###
 @app.route('/login', methods=['POST'])
@@ -36,7 +66,7 @@ def login():
             data['email'],
             data['password']
         )
-        print('hola')
+        print('login validated')
         if user:
             print('User exists')
             try:
@@ -63,21 +93,29 @@ def login():
         }, 500
 
 ### HOME ENDPOINT ###
-@app.route('/home', methods=['GET'])
+@app.route('/home', methods=['POST'])
 def home():
-        return 'CONGRATS!!!!!'
+    house = Houses.get_user_house(request.json['email'])
+    print(json_util.dumps(house))
+    return house
 
 
 ### USER ENDPOINTS ###
-@app.route('/user/<id>', methods=['GET'])
-def get_user(id):
-    user_found = mongo_client.db.users.find_one({ '_id': ObjectId(id) })
+@app.route('/getuser', methods=['POST'])
+def get_user():
+    user = User.get_by_email(request.json['email']) 
+    print(user)
+    return user
+
+
+@app.route('/userhashouse', methods=['POST'])
+def user_has_house():
+    user_found = mongo_client.db.users.find_one({ 'email': request.json['email'] })
     print(user_found)
-    response = json_util.dumps(user_found)
-    if user_found: 
-        return Response(response, mimetype="application/json")
+    if json.loads(json_util.dumps(user_found['house'])) == "":
+        return json.dumps({"res": False})
     else:
-        return not_found()
+        return json.dumps({"res": True})
 
 
 @app.route('/newuser', methods=['POST'])
@@ -122,7 +160,149 @@ def disable_account(self, id):
     user = self.get_by_id(id)
     return user
 
+## HOUSE ENDPOINTS ##
 @app.route('/createhouse', methods=['POST'])
+@jwt_required()
+def create_house():
+    data = request.json
+    data = json.loads(json_util.dumps(data))
+    members = data['members']
+    print(data)
+    Houses.create(
+        email=data['email'], 
+        name=data['name'],
+        members=data['members'],
+        bills=data['bills'],
+        shoplist=data['shoplist'],
+        tasklist=data['tasklist'],
+        homerules=data['homerules'],
+        house_img=data['house_img'],
+        created_at=datetime.now(),
+    )
+    return json.dumps({"msg": "Casa creada con éxito."})
+
+## BILLS ENDPOINTS ## 
+@app.route('/getbills', methods=['POST'])
+def get_bills():
+    try:
+        bills = Bills.get_bills(request.json['email'])
+        return bills
+    except:
+        return json.dumps({ "error": "Ops, something failed..."})
+
+@app.route('/getamounttopay', methods=['POST'])
+def get_amount_to_pay():
+    try:
+        amount = Bills.get_amount_to_pay(request.json['email'])
+        return amount
+    except:
+        return json.dumps({ "error": "Ops, something failed..."})
+
+@app.route('/newbill', methods=['POST'])
+@jwt_required()
+def add_bill():
+    try:
+        Bills.add_bill(request.json['email'], request.json['bill_name'], request.json['bill_amount'], request.json['personal_cost'])
+        return json.dumps({ "msg": "Bill added succesfully!"})
+    except:
+        return json.dumps({ "error": "Ops, something failed..."})
+
+@app.route('/deletebill', methods=['POST'])
+@jwt_required_custom
+def delete_bill():
+    try:
+        Bills.delete_bill(request.json['email'], request.json['bill_name'], request.json['bill_cost'], request.json['personal_cost'])
+        return json.dumps({ "msg": "Bill deleted succesfully!"})
+    except:
+        return json.dumps({ "error": "Ops, something failed..."})
+
+
+## SHOPLIST ENDPOINTS ## 
+@app.route('/getcommonlist', methods=['POST'])
+def get_common_shopping_list(): 
+    shoplist = Shoplist.get_common_shopping_list(request.json['email'])
+    return shoplist
+
+@app.route('/getpersonallist', methods=['POST'])
+def get_personal_shopping_list(): 
+    shoplist = Shoplist.get_personal_shopping_list(request.json['email'])
+    return shoplist
+
+@app.route('/deletecommonproduct', methods=['POST'])
+def delete_common_product(): 
+    try:
+        Shoplist.delete_common_product(request.json['email'], request.json['product_name'])
+        return json.dumps({ "msg": "Product deleted succesfully!"})
+    except:
+        return json.dumps({ "error": "Ops, something failed..."})
+
+@app.route('/deletepersonalproduct', methods=['POST'])
+def delete_personal_product(): 
+    try:
+        Shoplist.delete_personal_product(request.json['email'], request.json['product_name'])
+        return json.dumps({ "msg": "Product deleted succesfully!"})
+    except:
+        return json.dumps({ "error": "Ops, something failed..."})
+
+@app.route('/addcommonproduct', methods=['POST'])
+def add_common_product():
+    try:
+        Shoplist.add_common_product(request.json['email'], request.json['product_name'], request.json['quantity'])
+        return json.dumps({ "msg": "Product added succesfully!"})
+    except:
+        return json.dumps({ "error": "Ops, something failed..."})
+
+@app.route('/addpersonalproduct', methods=['POST'])
+def add_personal_product():
+    try:
+        Shoplist.add_personal_product(request.json['email'], request.json['product_name'], request.json['quantity'])
+        return json.dumps({ "msg": "Product added succesfully!"})
+    except:
+        return json.dumps({ "error": "Ops, something failed..."})
+
+
+# TASKLIST ENDPOINTS ## 
+@app.route('/getcommontasklist', methods=['POST'])
+def get_common_task_list(): 
+    shoplist = Tasklist.get_common_task_list(request.json['email'])
+    return shoplist
+
+@app.route('/getpersonaltasklist', methods=['POST'])
+def get_personal_task_list(): 
+    shoplist = Tasklist.get_personal_task_list(request.json['email'])
+    return shoplist
+
+@app.route('/deletecommontask', methods=['POST'])
+def delete_common_task():
+    try:
+        Tasklist.delete_common_task(request.json['email'], request.json['task_name'])
+        return json.dumps({ "msg": "Product deleted succesfully!"})
+    except:
+        return json.dumps({ "error": "Ops, something failed..."})
+
+@app.route('/deletepersonaltask', methods=['POST'])
+def delete_personal_task():
+    try:
+        Tasklist.delete_personal_task(request.json['email'], request.json['task_name'])
+        return json.dumps({ "msg": "Product deleted succesfully!"})
+    except:
+        return json.dumps({ "error": "Ops, something failed..."})
+
+@app.route('/addcommontask', methods=['POST'])
+def add_common_task(): 
+    try:
+        Tasklist.add_common_task(request.json['email'], request.json['task_name'])
+        return json.dumps({ "msg": "Task added succesfully!"})
+    except:
+        return json.dumps({ "error": "Ops, something failed..."})
+
+@app.route('/addpersonaltask', methods=['POST'])
+def add_personal_task():
+    try:
+        Tasklist.add_personal_task(request.json['email'], request.json['task_name'])
+        return json.dumps({ "msg": "Task added succesfully!"})
+    except:
+        return json.dumps({ "error": "Ops, something failed..."})
 
 @app.errorhandler(404)
 def not_found(error=None):
@@ -131,11 +311,4 @@ def not_found(error=None):
         'status': 404
     })
     response.status_code = 404
-    return response
-
-def login(self, email, password):
-    user = self.get_by_email(email)
-    if not user or not check_password_hash(user["password"], password):
-        return
-    user.pop("password")
-    return user
+    return response 
