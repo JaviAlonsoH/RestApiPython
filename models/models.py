@@ -1,20 +1,14 @@
 from array import array
 from email.policy import default
 import json
+from validator_collection import string
 from tokenize import Number, String
 from unicodedata import numeric
 import bson
 from bson import ObjectId, json_util
-from flask import jsonify
-from matplotlib.font_manager import FontProperties
-from pymongo import MongoClient
-from pymongo.errors import CollectionInvalid
-from collections import OrderedDict
 from flask_pymongo import PyMongo
-from validator_collection import string
 from werkzeug.security import generate_password_hash, check_password_hash
 from app import app
-from datetime import datetime 
 
 mongo_client = PyMongo(app)
 houses = mongo_client.db['houses']

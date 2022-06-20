@@ -10,7 +10,6 @@ from flask import request
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt, verify_jwt_in_request, get_jwt_identity, set_access_cookies
 from flask_jwt_extended.exceptions import WrongTokenError
 from flask import Response, current_app, jsonify, redirect, request, session
-from validator_collection import datetime
 from app import app
 from models.models import Bills, Shoplist, Tasklist, User, Houses
 from flask_pymongo import PyMongo 
